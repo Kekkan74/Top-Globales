@@ -1,0 +1,81 @@
+<% draft_count = @menus.count(&:draft?) %>
+<% published_count = @menus.count(&:published?) %>
+<% today_menu = @menus.find { |menu| menu.menu_date == Date.current } %>
+
+<section class="page-header">
+  <div>
+    <span class="eyebrow">Gestión de Cocina</span>
+    <h1 class="page-title">Historial de Menús</h1>
+    <p class="page-subtitle">Genera un borrador con IA y confirma manualmente su publicacion.</p>
+  </div>
+  <div class="toolbar">
+    <%= link_to generate_tenant_menus_path(date: Date.current), class: "btn btn-primary" do %>
+      Generador IA
+    <% end %>
+    <%= link_to "Nuevo Menu Manual", new_tenant_menu_path, class: "btn btn-secondary" %>
+  </div>
+</section>
+
+<section class="metric-grid menu-index-metrics">
+  <article class="metric-card">
+    <div class="metric-label">Menu de hoy</div>
+    <div class="metric-value"><%= today_menu.present? ? "1" : "0" %></div>
+    <p class="metric-caption"><%= today_menu.present? ? today_menu.title : "Pendiente de crear" %></p>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label">Borradores</div>
+    <div class="metric-value"><%= draft_count %></div>
+    <p class="metric-caption">Pendientes de confirmacion</p>
+  </article>
+  <article class="metric-card">
+    <div class="metric-label">Publicados</div>
+    <div class="metric-value"><%= published_count %></div>
+    <p class="metric-caption">Visibles en portal publico</p>
+  </article>
+</section>
+
+<section class="panel menu-index-panel" data-controller="card-filter">
+  <div class="menu-index-toolbar">
+    <div class="field menu-index-search">
+      <label for="menu-filter">Buscar por titulo, estado u origen</label>
+      <input id="menu-filter" type="search" placeholder="Ejemplo: borrador, publicado, vegetariano..." data-card-filter-target="query" data-action="input->card-filter#filter">
+    </div>
+  </div>
+
+  <div class="table-shell">
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Menu</th>
+          <th>Estado</th>
+          <th>Origen</th>
+          <th style="text-align: right;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% @menus.each do |menu| %>
+          <tr data-card-filter-target="card" data-search="<%= [menu.title, menu.status, menu.generated_by].join(' ') %>">
+            <td style="white-space: nowrap;"><strong><%= ui_date(menu.menu_date) %></strong></td>
+            <td>
+              <strong><%= menu.title %></strong>
+              <div class="help-text"><%= truncate(menu.description, length: 90) %></div>
+            </td>
+            <td><%= status_pill(menu.status) %></td>
+            <td><%= status_pill(menu.generated_by) %></td>
+            <td style="text-align: right;">
+              <div class="actions" style="justify-content: flex-end; margin-top: 0;">
+                <%= link_to "Resumen", tenant_menu_path(menu), class: "btn btn-secondary btn-sm" %>
+                <%= link_to "Editar", edit_tenant_menu_path(menu), class: "btn btn-secondary btn-sm" %>
+              </div>
+            </td>
+          </tr>
+        <% end %>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="empty-state is-hidden" data-card-filter-target="empty" style="margin-top: 2rem;">
+    Ningun menu coincide con la busqueda.
+  </div>
+</section>

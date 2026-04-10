@@ -1,0 +1,200 @@
+module TenantPortal
+  class MenusController < TenantPortal::BaseController
+    before_action :set_menu, only: [ :show, :edit, :update, :publish, :destroy ]
+
+    def index
+      @menus = tenant_scope(DailyMenu).includes(:daily_menu_items).order(menu_date: :desc)
+      authorize DailyMenu
+    end
+
+    def show
+      authorize @menu
+    end
+
+    def new
+      @menu = current_tenant.daily_menus.new(menu_date: Date.current)
+      @menu.daily_menu_items.build(position: 0)
+      authorize @menu
+    end
+
+    def create
+      @menu = current_tenant.daily_menus.new(menu_params.merge(created_by: current_user, generated_by: :manual))
+      authorize @menu
+
+      if @menu.save
+        AuditLogger.log!(action: "menu.created", actor: current_user, tenant: current_tenant, entity: @menu, metadata: {}, ip_address: request.remote_ip)
+        redirect_to tenant_menu_path(@menu), notice: "Menu creado"
+      else
+        render :new, status: :unprocessable_entity
+      end
+    end
+
+    def edit
+      authorize @menu
+      @menu.daily_menu_items.build(position: @menu.daily_menu_items.size) if @menu.daily_menu_items.empty?
+    end
+
+    def update
+      authorize @menu
+
+      if @menu.update(menu_params)
+        AuditLogger.log!(action: "menu.updated", actor: current_user, tenant: current_tenant, entity: @menu, metadata: {}, ip_address: request.remote_ip)
+        redirect_to tenant_menu_path(@menu), notice: "Menu actualizado"
+      else
+        render :edit, status: :unprocessable_entity
+      end
+    end
+
+    def generate
+      menu_date = parse_menu_date(params[:date])
+      menu = current_tenant.daily_menus.find_or_initialize_by(menu_date: menu_date)
+      authorize menu, :create?
+
+      if request.get?
+        load_generate_context(menu_date)
+        return
+      end
+
+      if menu.persisted?
+        redirect_to tenant_menu_path(menu), alert: "Ya existe un menu para #{I18n.l(menu_date)}. Solo se permite un menu por dia."
+        return
+      end
+
+      generated_menu = Menus::GenerateDailyMenuService.new(tenant: current_tenant, user: current_user).call(
+        date: menu_date,
+        selected_lot_ids: selected_lot_ids
+      )
+      redirect_to tenant_menu_path(generated_menu), notice: "Preview generado. Revisa el resumen y confirma para publicarlo."
+    rescue Date::Error
+      redirect_to tenant_menus_path, alert: "Fecha invalida"
+    end
+
+    def publish
+      authorize @menu, :publish?
+      @menu.update!(status: :published)
+
+      AuditLogger.log!(action: "menu.published", actor: current_user, tenant: current_tenant, entity: @menu, metadata: {}, ip_address: request.remote_ip)
+      redirect_to tenant_menu_path(@menu), notice: "Menu publicado"
+    end
+
+    def destroy
+      authorize @menu
+
+      @menu.destroy!
+      AuditLogger.log!(action: "menu.deleted", actor: current_user, tenant: current_tenant, entity: @menu, metadata: {}, ip_address: request.remote_ip)
+      redirect_to tenant_menus_path, notice: "Menu eliminado"
+    end
+
+    private
+
+    def set_menu
+      @menu = tenant_scope(DailyMenu).find(params[:id])
+    end
+
+    def menu_params
+      raw = params.require(:daily_menu).permit(
+        :menu_date,
+        :title,
+        :description,
+        allergens_json: [],
+        nutrition_summary_json: {},
+        planning_notes_json: {},
+        dietary_guidance_json: [ :halalStatus, :religiousNotes, { haramRisks: [], vegetarianOptions: [], veganOptions: [] } ],
+        daily_menu_items_attributes: [
+          :id,
+          :name,
+          :description,
+          :position,
+          :servings,
+          :repetitions,
+          :religious_notes,
+          :_destroy,
+          { ingredients_json: [], allergens_json: [], dietary_flags_json: [], nutrition_json: {}, inventory_usage_json: [ :lotId, :product, :quantity, :unit ] }
+        ]
+      ).to_h
+
+      raw["allergens_json"] = normalize_csv_array(raw["allergens_json"]) if raw.key?("allergens_json")
+      raw["nutrition_summary_json"] = normalize_hash(raw["nutrition_summary_json"]) if raw.key?("nutrition_summary_json")
+      raw["planning_notes_json"] = normalize_hash(raw["planning_notes_json"]) if raw.key?("planning_notes_json")
+      raw["dietary_guidance_json"] = normalize_dietary_guidance(raw["dietary_guidance_json"]) if raw.key?("dietary_guidance_json")
+
+      items = raw["daily_menu_items_attributes"] || {}
+      items.each_value do |item|
+        item["ingredients_json"] = normalize_csv_array(item["ingredients_json"]) if item.key?("ingredients_json")
+        item["allergens_json"] = normalize_csv_array(item["allergens_json"]) if item.key?("allergens_json")
+        item["dietary_flags_json"] = normalize_csv_array(item["dietary_flags_json"]) if item.key?("dietary_flags_json")
+        item["nutrition_json"] = normalize_hash(item["nutrition_json"]) if item.key?("nutrition_json")
+        item["inventory_usage_json"] = normalize_inventory_usage(item["inventory_usage_json"]) if item.key?("inventory_usage_json")
+        item["servings"] = normalize_positive_integer(item["servings"], default: 1) if item.key?("servings")
+        item["repetitions"] = normalize_positive_integer(item["repetitions"], default: 1) if item.key?("repetitions")
+      end
+
+      raw
+    end
+
+    def normalize_csv_array(value)
+      Array(value).flat_map { |v| v.to_s.split(",") }.map(&:strip).reject(&:blank?)
+    end
+
+    def normalize_hash(value)
+      value.is_a?(Hash) ? value : {}
+    end
+
+    def normalize_dietary_guidance(value)
+      return {} unless value.is_a?(Hash)
+
+      {
+        "halalStatus" => value["halalStatus"].to_s.strip,
+        "religiousNotes" => value["religiousNotes"].to_s.strip,
+        "haramRisks" => normalize_csv_array(value["haramRisks"]),
+        "vegetarianOptions" => normalize_csv_array(value["vegetarianOptions"]),
+        "veganOptions" => normalize_csv_array(value["veganOptions"])
+      }.compact
+    end
+
+    def normalize_inventory_usage(value)
+      entries = value.is_a?(Hash) ? value.values : Array(value)
+
+      entries.map do |usage|
+        normalized = usage.is_a?(Hash) ? usage.to_h : {}
+        next if normalized.blank?
+
+        {
+          "lotId" => normalized["lotId"].presence || normalized[:lotId],
+          "product" => normalized["product"].presence || normalized[:product],
+          "quantity" => normalized["quantity"].presence || normalized[:quantity],
+          "unit" => normalized["unit"].presence || normalized[:unit]
+        }.compact
+      end.compact
+    end
+
+    def normalize_positive_integer(value, default:)
+      parsed = Integer(value)
+      parsed.positive? ? parsed : default
+    rescue ArgumentError, TypeError
+      default
+    end
+
+    def parse_menu_date(raw_date)
+      raw_date.present? ? Date.parse(raw_date) : Date.current
+    end
+
+    def selected_lot_ids
+      Array(params[:lot_ids]).map(&:to_i).select { |id| id.positive? }.uniq
+    end
+
+    def load_generate_context(menu_date)
+      @menu_date = menu_date
+      @candidate_lots = Menus::GenerateDailyMenuService.prioritized_lots_for(current_tenant)
+      @selected_lot_ids = selected_lot_ids
+      @selected_lot_ids = @candidate_lots.map(&:id) if @selected_lot_ids.empty?
+      @selected_lots = @candidate_lots.select { |lot| @selected_lot_ids.include?(lot.id) }
+      @selected_lots = @candidate_lots if @selected_lots.empty?
+
+      @ingredients_preview = Menus::GenerateDailyMenuService.ingredients_for(@selected_lots)
+      @planning_preview = Menus::GenerateDailyMenuService.planning_context_for(@selected_lots)
+      @latest_generation = current_tenant.menu_generations.order(created_at: :desc).first
+      @menu_for_date = current_tenant.daily_menus.find_by(menu_date: @menu_date)
+    end
+  end
+end

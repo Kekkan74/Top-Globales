@@ -1,0 +1,197 @@
+<section class="menu-flow-hero">
+  <div>
+    <p class="eyebrow">Generador IA</p>
+    <h1 class="page-title">Menu diario guiado</h1>
+    <p class="page-subtitle">Flujo recomendado: selecciona lotes, revisa el preview y genera un borrador para confirmarlo en resumen.</p>
+  </div>
+  <div class="toolbar">
+    <%= link_to "Historial de menus", tenant_menus_path, class: "btn btn-secondary btn-sm" %>
+    <% if @menu_for_date.present? %>
+      <%= link_to "Abrir resumen #{ui_date(@menu_date)}", tenant_menu_path(@menu_for_date), class: "btn btn-primary btn-sm" %>
+    <% end %>
+  </div>
+</section>
+
+<section class="menu-stepper" aria-label="Pasos para generar menu">
+  <div class="menu-step is-done">
+    <span class="menu-step-index">1</span>
+    <div>
+      <strong>Selecciona inventario</strong>
+      <p class="help-text">Escoge fecha y lotes prioritarios.</p>
+    </div>
+  </div>
+  <div class="menu-step <%= @ingredients_preview.any? ? "is-done" : "" %>">
+    <span class="menu-step-index">2</span>
+    <div>
+      <strong>Valida preview</strong>
+      <p class="help-text">Confirma ingredientes y alergenos.</p>
+    </div>
+  </div>
+  <div class="menu-step <%= @menu_for_date.present? ? "is-done" : "is-active" %>">
+    <span class="menu-step-index">3</span>
+    <div>
+      <strong>Genera borrador</strong>
+      <p class="help-text">Se publicara solo al confirmar.</p>
+    </div>
+  </div>
+</section>
+
+<% if @menu_for_date.present? %>
+  <section class="menu-lock-banner" role="status">
+    <div>
+      <h2>Ya existe un menu para <%= ui_date(@menu_date) %></h2>
+      <p>Solo se permite un menu diario. Continua en resumen para editar o confirmar publicacion.</p>
+    </div>
+    <%= link_to "Ir al resumen", tenant_menu_path(@menu_for_date), class: "btn btn-primary" %>
+  </section>
+<% end %>
+
+<section class="menu-flow-grid">
+  <article class="panel menu-flow-panel">
+    <div class="menu-flow-panel-head">
+      <h2>Paso 1: Inventario para el menu</h2>
+      <span class="status-pill status-neutral"><%= @selected_lots.size %> lotes seleccionados</span>
+    </div>
+
+    <%= form_with url: generate_tenant_menus_path, method: :get, local: true do %>
+      <div class="menu-filter-row">
+        <div class="field">
+          <label for="menu-date">Fecha del menu</label>
+          <%= date_field_tag :date, @menu_date, id: "menu-date" %>
+        </div>
+        <div class="actions">
+          <%= submit_tag "Actualizar seleccion", class: "btn btn-secondary" %>
+        </div>
+      </div>
+
+      <% if @candidate_lots.any? %>
+        <div class="table-shell menu-lot-table">
+          <table>
+            <thead>
+              <tr>
+                <th>Usar</th>
+                <th>Producto</th>
+                <th>Cantidad</th>
+                <th>Caducidad</th>
+                <th>Prioridad</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% @candidate_lots.each do |lot| %>
+                <% days_to_expiry = (lot.expires_on - Date.current).to_i %>
+                <tr>
+                  <td>
+                    <%= check_box_tag "lot_ids[]", lot.id, @selected_lot_ids.include?(lot.id), id: "lot_#{lot.id}" %>
+                  </td>
+                  <td>
+                    <label for="lot_<%= lot.id %>"><strong><%= lot.product.name %></strong></label>
+                    <div class="help-text">Lote #<%= lot.id %></div>
+                  </td>
+                  <td><%= lot.quantity %> <%= lot.unit %></td>
+                  <td><%= ui_date(lot.expires_on) %></td>
+                  <td>
+                    <% if days_to_expiry <= 1 %>
+                      <span class="status-pill status-danger">Critica (<%= days_to_expiry %>d)</span>
+                    <% elsif days_to_expiry <= 2 %>
+                      <span class="status-pill status-warning">Alta (<%= days_to_expiry %>d)</span>
+                    <% else %>
+                      <span class="status-pill status-neutral">Normal (<%= days_to_expiry %>d)</span>
+                    <% end %>
+                  </td>
+                </tr>
+              <% end %>
+            </tbody>
+          </table>
+        </div>
+      <% else %>
+        <div class="empty-state">No hay lotes disponibles para generar menu.</div>
+      <% end %>
+    <% end %>
+  </article>
+
+  <aside class="panel panel-soft menu-flow-panel menu-sticky-preview">
+    <div class="menu-flow-panel-head">
+      <h2>Paso 2 y 3: Preview y generacion</h2>
+      <span class="status-pill status-positive">Manual</span>
+    </div>
+
+    <p class="help-text">Este bloque no publica nada automaticamente. Solo crea un borrador en resumen.</p>
+
+    <% planning = @planning_preview.is_a?(Hash) ? @planning_preview : {} %>
+    <% if planning.present? %>
+      <div class="menu-smart-summary-card" style="margin-bottom: 1rem;">
+        <h3>Modo sugerido IA</h3>
+        <p><%= planning[:menuGuideline] %></p>
+        <div class="menu-inline-metrics">
+          <span class="menu-inline-metric"><strong><%= planning[:suggestedMode] %></strong></span>
+          <span class="menu-inline-metric"><strong><%= planning[:urgentLots] %></strong> lotes criticos</span>
+        </div>
+      </div>
+    <% end %>
+
+    <% if @ingredients_preview.any? %>
+      <ul class="list-clean menu-preview-list">
+        <% @ingredients_preview.each_with_index do |ingredient, index| %>
+          <li class="menu-preview-item">
+            <div class="menu-item-head">
+              <strong><%= ingredient[:product] %></strong>
+              <span class="help-text">#<%= index + 1 %></span>
+            </div>
+            <p class="muted"><%= ingredient[:quantity] %> <%= ingredient[:unit] %></p>
+            <p class="help-text">Caduca: <%= ui_date(ingredient[:expiresOn]) %></p>
+            <% if ingredient[:knownAllergens].present? %>
+              <div class="help-text">
+                <strong>Alergenos:</strong>
+                <%= allergen_badges(Array(ingredient[:knownAllergens]), wrapper_class: "allergen-badge-group allergen-badge-group-inline") %>
+              </div>
+            <% end %>
+          </li>
+        <% end %>
+      </ul>
+    <% else %>
+      <div class="empty-state">Selecciona lotes para ver el preview de ingredientes.</div>
+    <% end %>
+
+    <%= form_with url: generate_tenant_menus_path,
+      method: :post,
+      local: true,
+      class: "menu-generate-form",
+      data: {
+        controller: "menu-generation-loading",
+        action: "submit->menu-generation-loading#start turbo:submit-start->menu-generation-loading#captureSubmission turbo:submit-end->menu-generation-loading#finish",
+        menu_generation_loading_cancel_path_value: tenant_menus_path
+      } do %>
+      <%= hidden_field_tag :date, @menu_date %>
+      <% @selected_lot_ids.each do |lot_id| %>
+        <%= hidden_field_tag "lot_ids[]", lot_id %>
+      <% end %>
+
+      <%= submit_tag "Generar borrador del menu",
+        class: "btn btn-primary menu-cta",
+        disabled: @selected_lot_ids.empty? || @menu_for_date.present? %>
+
+      <% if @menu_for_date.present? %>
+        <p class="help-text">Ya hay un menu para esta fecha. Continua en resumen.</p>
+      <% elsif @selected_lot_ids.empty? %>
+        <p class="help-text">Selecciona al menos un lote para generar.</p>
+      <% else %>
+        <p class="help-text">Despues de generar: revisa el resumen y pulsa "Confirmar y Publicar".</p>
+      <% end %>
+
+      <div class="menu-generation-overlay" data-menu-generation-loading-target="overlay" aria-live="polite" aria-hidden="true">
+        <section class="menu-generation-dialog" role="dialog" aria-modal="true" aria-label="Generando menu del dia">
+          <div class="menu-generation-logo-shell">
+            <span class="menu-generation-ring" aria-hidden="true"></span>
+            <%= image_tag "brand/logo-zero.png", alt: "Logo Desperdicio Cero", class: "menu-generation-logo" %>
+          </div>
+          <h3 class="menu-generation-title">Generando menu con IA</h3>
+          <p class="menu-generation-copy">Estamos preparando el borrador. No cierres esta pantalla hasta completar el proceso.</p>
+          <p class="menu-generation-status">Cargando menu<span class="menu-generation-dots" aria-hidden="true"></span></p>
+          <button type="button" class="btn btn-secondary" data-menu-generation-loading-target="cancelButton" data-action="menu-generation-loading#cancel">
+            Cancelar y volver atras
+          </button>
+        </section>
+      </div>
+    <% end %>
+  </aside>
+</section>
